@@ -8,7 +8,7 @@ from scipy import stats
 import matplotlib.pyplot as plt
 import seaborn as sns
 import datetime
-# from statsmodels.stats.multitest import multipletests
+import plotly.express as px
 
 
 class Main:
@@ -69,14 +69,17 @@ class Main:
 
         self.parse_abund()
         self.parse_metadata()
-        self.parse_kegg()
 
         self.stats()
+        self.parse_kegg()
+        self.kegg_pathways()
 
     def stats(self):
         if self.abund is None or self.metadata is None:
             return
-        
+
+        st.markdown("## Statistical Analysis")
+
         # Pick the column used to compare samples
         compare_by = st.selectbox(
             "Compare Samples By:",
@@ -141,8 +144,72 @@ class Main:
             # Run a paired t-test for the selected set of groups, and pairing variable
             res = self.paired_ttest(pair_by, compare_by, control_group, comparison_group)
 
-        st.dataframe(res)
+        res = (
+            res
+            .assign(
+                neg_log_pvalue=-res["pvalue"].apply(np.log10)
+            )
+            .sort_values(by="pvalue")
+            .reset_index(drop=True)
+            .reindex(
+                columns=[
+                    "metabolite",
+                    "pvalue",
+                    "neg_log_pvalue",
+                    "tvalue",
+                    "log_fold_change",
+                    "mean_abund",
+                ]
+            )
+        )
 
+        st.markdown("### Results Table")
+        st.dataframe(res, hide_index=True)
+
+        st.markdown("### Plot Results")
+
+        kwargs = dict(
+            hover_name="metabolite",
+            hover_data=["pvalue", "mean_abund"],
+            color="neg_log_pvalue",
+            color_continuous_scale="bluered",
+            labels=dict(
+                log_fold_change="Fold Change (log2)",
+                neg_log_pvalue="p-value (-log10)",
+                mean_abund="Mean Abundance",
+                pvalue="p-value"
+            )
+        )
+
+        # Volcano
+        fig = px.scatter(
+            data_frame=res,
+            x="log_fold_change",
+            y="neg_log_pvalue",
+            title="Volcano Plot",
+            **kwargs
+        )
+        fig.add_vline(x=0, line_width=1, line_color="grey")
+        fig.add_hline(y=0, line_width=1, line_color="grey")
+        st.plotly_chart(fig)
+
+        # MA Plot
+        ma_plot = st.empty()
+        ma_log_y = st.checkbox("Log Y Scale", key="logy_maplot")
+        fig = px.scatter(
+            data_frame=res,
+            x="log_fold_change",
+            y="mean_abund",
+            title="M-A Plot",
+            log_y=ma_log_y,
+            **kwargs
+        )
+        fig.add_vline(x=0, line_width=1, line_color="grey")
+        if not ma_log_y:
+            fig.add_hline(y=0, line_width=1, line_color="grey")
+        ma_plot.plotly_chart(fig)
+
+        st.markdown("### Plot Single Metabolite")
         # Let the user select one to plot
         metab = st.selectbox(
             "Metabolite to plot",
@@ -249,7 +316,7 @@ class Main:
                 )
             )
 
-        return pd.DataFrame(res_list).sort_values(by="pvalue")
+        return pd.DataFrame(res_list)
 
     def paired_ttest(self, pair_by, compare_by, control_group, comparison_group):
 
@@ -277,7 +344,7 @@ class Main:
                 )
             )
 
-        return pd.DataFrame(res_list).sort_values(by="pvalue")
+        return pd.DataFrame(res_list)
 
     def get_vals(self, cname, val, metab, index_by=None):
 
@@ -454,6 +521,10 @@ class Main:
 
         else:
             self.disp_empty.write("Please provide KEGG CSV")
+
+    def kegg_pathways(self):
+        """Display the KEGG pathways for any significant genes."""
+        pass
 
 
 if __name__ == "__main__":
