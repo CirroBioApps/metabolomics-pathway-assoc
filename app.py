@@ -1,28 +1,29 @@
 #!/usr/bin/env streamlit
 
+from typing import Union
+import numpy as np
 import streamlit as st
 import pandas as pd
 from scipy import stats
 import matplotlib.pyplot as plt
 import seaborn as sns
+import datetime
 # from statsmodels.stats.multitest import multipletests
 
 
 class Main:
 
+    abund: Union[None, pd.DataFrame]
+
     def __init__(self):
 
-        # Area for messages
-        # Only one message will be written at a time
-        self.msg_empty = st.empty()
+        # Area for logging messages
+        self.log_empty = st.empty()
+        self.log_container = self.log_empty.expander("Logs", expanded=True)
 
         # Area for displays
         self.disp_empty = st.empty()
-
-        # Show the user the uploaded data
-        self.abund_expander = st.expander("Abundances").empty()
-        self.metadata_expander = st.expander("Metadata").empty()
-        # self.kegg_expander = st.expander("KEGG").empty()
+        self.disp_container = self.disp_empty.container()
 
         # Let the user upload a metadata CSV
         self.metadata_uploader = (
@@ -44,121 +45,243 @@ class Main:
             )
         )
 
-        # # Let the user upload a KEGG CSV
-        # self.kegg_uploader = (
-        #     st
-        #     .sidebar
-        #     .file_uploader(
-        #         "KEGG Annotations (CSV)",
-        #         help="Upload a CSV file with the KEGG annotations for each metabolite"
-        #     )
-        # )
+        # Let the user upload a KEGG CSV
+        self.kegg_uploader = (
+            st
+            .sidebar
+            .file_uploader(
+                "KEGG Annotations (CSV)",
+                help="Upload a CSV file with the KEGG annotations for each metabolite"
+            )
+        )
 
         self.abund = None
         self.metadata = None
-        # self.kegg = None
+        self.kegg = None
 
         self.run()
+
+    def log(self, msg):
+        ct = datetime.datetime.now()
+        self.log_container.write(f"[{ct}] {msg}")
 
     def run(self):
 
         self.parse_abund()
         self.parse_metadata()
-        # self.parse_kegg()
+        self.parse_kegg()
 
         self.stats()
 
     def stats(self):
         if self.abund is None or self.metadata is None:
             return
-
-        # Pick the variable to group by
-        guess_group_by = self.metadata.apply(lambda c: c.unique().shape[0]).sort_values().index.values[-1]
-
-        # Let the user pick the variable to group by
-        group_by = st.sidebar.selectbox(
-            "Group By",
+        
+        # Pick the column used to compare samples
+        compare_by = st.selectbox(
+            "Compare Samples By:",
             options=list(self.metadata.columns.values),
-            index=list(self.metadata.columns.values).index(guess_group_by)
+            index=list(self.metadata.columns.values).index(
+                self.metadata.apply(
+                    lambda c: c.unique().shape[0]
+                ).sort_values().index.values[0]
+            )
         )
 
-        # For the other columns, run a paired t-test
-        res = self.run_stats(group_by)
+        # Get the control and the comparitor values
+        groups = self.metadata[compare_by].drop_duplicates().sort_values().tolist()
+        if len(groups) == 1:
+            self.log(f"Cannot compare - all samples have {compare_by} == {groups[0]}")
+            return
 
-        # Set up an area to display a few things
-        cont = self.disp_empty.container()
-        cont.dataframe(res)
+        control_group = st.selectbox(
+            "Control Group:",
+            options=groups
+        )
+        comparison_group = st.selectbox(
+            "Comparison Group:",
+            options=[gn for gn in groups if gn != control_group]
+        )
+
+        # Let the user decide whether to run a paired or unpaired analysis
+        if self.metadata.shape[1] < 2 or st.selectbox(
+            "Statistical Test:",
+            options=[
+                "Unpaired t-test",
+                "Paired t-test"
+            ]
+        ) == "Unpaired t-test":
+
+            # Run an unpaired t-test for the selected set of groups
+            res = self.unpaired_ttest(compare_by, control_group, comparison_group)
+
+            pair_by = None
+
+        else:
+            # If a paired approach was selected
+            # Ask the user which column to pair samples by
+            pair_by = st.selectbox(
+                "Pair By:",
+                help="Select the column used to match up pairs of samples for comparison",
+                options=[
+                    cname for cname in self.metadata.columns.values
+                    if cname != compare_by
+                ]
+            )
+
+            # There can only be a single instance of each value per group
+            for (compare_val, pair_val), d in self.metadata.groupby([compare_by, pair_by]):
+                if compare_val not in [control_group, comparison_group]:
+                    continue
+                if d.shape[0] > 1:
+                    msg = f"multiple samples found with {compare_by} == {compare_val} and {pair_by} == {pair_val}"
+                    self.log(f"Cannot perform paired analysis using {pair_by} -- {msg}")
+                    return
+
+            # Run a paired t-test for the selected set of groups, and pairing variable
+            res = self.paired_ttest(pair_by, compare_by, control_group, comparison_group)
+
+        st.dataframe(res)
 
         # Let the user select one to plot
-        metab = cont.selectbox(
+        metab = st.selectbox(
             "Metabolite to plot",
-            res.index.values
+            res['metabolite'].values
         )
 
-        # Let the user select the metadata of interest
-        cname = cont.selectbox(
-            "Show across metadata",
-            [cn for cn in self.metadata.columns.values if cn != group_by]
-        )
-
-        # Get the values for that plot
         plot_df = (
-            pd.DataFrame({
-                vn: self.get_vals(group_by, cname, vn, metab)
-                for vn in self.metadata[cname].unique()
+            self.metadata.assign(**{
+                metab: self.abund[metab]
             })
             .dropna()
-            .T
+        )
+        plot_df = plot_df.loc[
+            plot_df[compare_by].isin([control_group, comparison_group])
+        ]
+
+        kwargs = dict(
+            x=compare_by,
+            order=[control_group, comparison_group],
+            y=metab
         )
 
-        fig, ax = plt.subplots()
-        plt.xlabel(cname)
-        plt.ylabel("Abundance")
-        plt.title(metab)
-        plot_df.plot(kind="line", ax=ax)
-        cont.pyplot(fig)
+        if pair_by is None:
 
-    def run_stats(self, group_by):
+            plot_type = st.selectbox(
+                "Plot Type:",
+                options=[
+                    "box",
+                    "boxen",
+                    "violin",
+                    "bar",
+                    "point",
+                    "strip",
+                    "swarm"
+                ]
+            )
 
-        return (
-            pd.DataFrame({
-                f"{v1} vs {v2}": self.paired_ttest(group_by, cname, v1, v2)
-                for cname in self.metadata.columns.values
-                if cname != group_by
-                for v1 in self.metadata[cname].unique()
-                for v2 in self.metadata[cname].unique()
-                if v1 < v2
-            })
-            .assign(MIN=lambda d: d.min(axis=1))
-            .sort_values(by="MIN")
-        )
+            fig, _ = plt.subplots()
 
-    def paired_ttest(self, group_by, cname, v1, v2):
+            dict(
+                box=sns.boxplot,
+                boxen=sns.boxenplot,
+                violin=sns.violinplot,
+                bar=sns.barplot,
+                point=sns.pointplot,
+                strip=sns.stripplot,
+                swarm=sns.swarmplot,
+            )[plot_type](
+                data=plot_df,
+                **kwargs
+            )
 
-        res = []
+        else:
+            # Only keep the observations with proper pairs
+            vc = plot_df[pair_by].value_counts()
+            plot_df = plot_df.loc[
+                plot_df[pair_by].isin(
+                    vc.index.values[vc == 2]
+                )
+            ]
+
+            fig, _ = plt.subplots()
+            sns.pointplot(
+                data=plot_df,
+                hue=pair_by,
+                **kwargs
+            )
+
+        if st.checkbox("Log Y Scale"):
+            plt.yscale("log")
+
+        plt.show()
+        st.pyplot(fig)
+
+        st.dataframe(plot_df)
+
+        # fig, ax = plt.subplots()
+        # plt.xlabel(cname)
+        # plt.ylabel("Abundance")
+        # plt.title(metab)
+        # plot_df.plot(kind="line", ax=ax)
+        # cont.pyplot(fig)
+
+    def unpaired_ttest(self, compare_by, control_group, comparison_group):
+
+        res_list = []
+
+        for metab in self.abund.columns.values:
+
+            control_vals = self.get_vals(compare_by, control_group, metab)
+            comparison_vals = self.get_vals(compare_by, comparison_group, metab)
+
+            res = stats.ttest_ind(control_vals, comparison_vals)
+
+            log_fold_change = np.log2(comparison_vals.mean() / control_vals.mean())
+
+            res_list.append(
+                dict(
+                    pvalue=res.pvalue,
+                    tvalue=res.statistic,
+                    mean_abund=np.mean([comparison_vals.mean(), control_vals.mean()]),
+                    log_fold_change=log_fold_change,
+                    metabolite=metab
+                )
+            )
+
+        return pd.DataFrame(res_list).sort_values(by="pvalue")
+
+    def paired_ttest(self, pair_by, compare_by, control_group, comparison_group):
+
+        res_list = []
 
         for metab in self.abund.columns.values:
 
             # Get the v1 and v2 values, merged across replicates
             comp = pd.DataFrame({
-                v1: self.get_vals(group_by, cname, v1, metab),
-                v2: self.get_vals(group_by, cname, v2, metab)
+                control_group: self.get_vals(compare_by, control_group, metab, index_by=pair_by),
+                comparison_group: self.get_vals(compare_by, comparison_group, metab, index_by=pair_by)
             }).dropna()
-            res.append(
+
+            res = stats.ttest_rel(comp[control_group].values, comp[comparison_group].values)
+
+            log_fold_change = np.log2((comp[comparison_group] / comp[control_group]).mean())
+
+            res_list.append(
                 dict(
-                    pvalue=stats.ttest_rel(
-                        comp[v1].values,
-                        comp[v2].values
-                    ).pvalue,
+                    pvalue=res.pvalue,
+                    tvalue=res.statistic,
+                    mean_abund=comp.mean().mean(),
+                    log_fold_change=log_fold_change,
                     metabolite=metab
                 )
             )
 
-        return pd.DataFrame(res).set_index("metabolite")['pvalue']
+        return pd.DataFrame(res_list).sort_values(by="pvalue")
 
-    def get_vals(self, group_by, cname, val, metab):
+    def get_vals(self, cname, val, metab, index_by=None):
 
-        return (
+        vals = (
             self.metadata.query(
                 f"{cname} == '{val}'" if isinstance(val, str) else f"{cname} == {val}"
             )
@@ -166,12 +289,17 @@ class Main:
                 **{val: self.abund[metab]}
             )
             .drop(columns=[cname])
-            .groupby(
-                group_by
-            )
-            [val]
-            .mean()
         )
+        if index_by is None:
+            return vals[val].dropna()
+        else:
+            return vals.set_index(index_by)[val].dropna()
+
+    def log_table_size(self, header: str, df: pd.DataFrame):
+
+        nrows = df.shape[0]
+        ncols = df.shape[1]
+        self.log(f"{header} - {nrows:,} rows x {ncols:,} columns")
 
     def parse_abund(self):
         if self.abund_uploader:
@@ -181,10 +309,12 @@ class Main:
                     index_col=0
                 )
             except Exception as e:
-                self.msg_empty.write(
+                st.error(
                     f"Error reading abundances CSV:\n\n{str(e)}"
                 )
                 return
+
+            self.log_table_size("Abundance Table - Uploaded", self.abund)
 
             # Drop any columns without top-line header
             self.abund = self.abund.reindex(
@@ -215,15 +345,15 @@ class Main:
             ]
             if len(empties) > 0:
                 empties = '\n - '.join(empties)
-                self.disp_empty.write(
+                st.error(
                     f"Found missing values in rows:\n\n - {empties}"
                 )
                 self.abund = None
                 return
 
-            self.abund = self.abund.T.sort_index(axis=1)
+            self.log_table_size("Abundance Table - Filtered", self.abund)
 
-            self.abund_expander.write(self.abund)
+            self.abund = self.abund.T.sort_index(axis=1)
 
         else:
             self.disp_empty.write(
@@ -250,29 +380,27 @@ class Main:
                     index_col=0
                 )
             except Exception as e:
-                self.msg_empty.write(
+                st.error(
                     f"Error reading metadata CSV:\n\n{str(e)}"
                 )
                 return
 
-            # Make sure that the metadata matches the abundances
+            # Get the list of samples which are in the metadata and abundances
             abund_ix = set(self.abund.index.values)
             metadata_ix = set(self.metadata.index.values)
+            overlap_ix = abund_ix & metadata_ix
 
-            if not abund_ix == metadata_ix:
+            self.log(f"Number of samples defined in abundance table: {len(abund_ix):,}")
+            self.log(f"Number of samples defined in metadata table: {len(metadata_ix):,}")
+            self.log(f"Number of samples defined in both: {len(overlap_ix):,}")
 
-                msg = "Samples in metadata do not match abundances"
-                if len(abund_ix - metadata_ix) > 0:
-                    for s in list(abund_ix - metadata_ix):
-                        msg = f"{msg}\n\nIn Abundances only: {s}"
-                if len(metadata_ix - abund_ix) > 0:
-                    for s in list(metadata_ix - abund_ix):
-                        msg = f"{msg}\n\nIn Metadata only: {s}"
-                self.disp_empty.write(msg)
-                self.metadata = None
+            if len(overlap_ix) == 0:
+                st.error("Labels do not match between metadata and abundances")
+                self.abund = None
                 return
 
-            self.metadata_expander.write(self.metadata)
+            self.abund = self.abund.reindex(index=list(overlap_ix)).sort_index()
+            self.metadata = self.metadata.reindex(index=list(overlap_ix)).sort_index()
 
         else:
             self.disp_empty.write(
@@ -287,20 +415,30 @@ class Main:
         if self.kegg_uploader:
 
             try:
-                self.kegg = pd.read_csv(
-                    self.kegg_uploader,
-                    index_col=0
-                )
+                if self.kegg_uploader.name.endswith(".xlsx"):
+                    self.kegg = pd.read_excel(
+                        self.kegg_uploader,
+                        index_col=0,
+                        header=None
+                    )
+                else:
+                    self.kegg = pd.read_csv(
+                        self.kegg_uploader,
+                        index_col=0,
+                        header=None
+                    )
             except Exception as e:
-                self.msg_empty.write(
-                    f"Error reading KEGG CSV:\n\n{str(e)}"
+                st.error(
+                    f"Error reading KEGG file:\n\n{str(e)}"
                 )
                 return
 
             # Only keep the first column
             self.kegg = self.kegg[
                 self.kegg.columns.values[0]
-            ]
+            ].dropna()
+
+            self.log(f"Read in {self.kegg.shape[0]:,} KEGG IDs")
 
             # Only keep those compounds which are in the abundances
             self.kegg = self.kegg.loc[
@@ -310,7 +448,9 @@ class Main:
                 ]
             ]
 
-            self.kegg_expander.write(self.kegg.sort_index())
+            self.log(f"KEGG IDs found in abundance table: {self.kegg.shape[0]:,}")
+            self.abund = self.abund.reindex(columns=self.kegg.index.values)
+            self.log(f"Only using the {self.abund.shape[0]:,} metabolites listed in the KEGG table")
 
         else:
             self.disp_empty.write("Please provide KEGG CSV")
