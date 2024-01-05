@@ -1,5 +1,7 @@
 #!/usr/bin/env streamlit
 
+from collections import defaultdict
+import requests
 from typing import Union
 import numpy as np
 import streamlit as st
@@ -24,6 +26,10 @@ class Main:
         # Area for displays
         self.disp_empty = st.empty()
         self.disp_container = self.disp_empty.container()
+        self.disp_stats = self.disp_container.container()
+        self.disp_plots = self.disp_container.container()
+        self.disp_kegg = self.disp_container.container()
+        self.res = None
 
         # Let the user upload a metadata CSV
         self.metadata_uploader = (
@@ -78,10 +84,10 @@ class Main:
         if self.abund is None or self.metadata is None:
             return
 
-        st.markdown("## Statistical Analysis")
+        self.disp_stats.markdown("## Statistical Analysis")
 
         # Pick the column used to compare samples
-        compare_by = st.selectbox(
+        compare_by = self.disp_stats.selectbox(
             "Compare Samples By:",
             options=list(self.metadata.columns.values),
             index=list(self.metadata.columns.values).index(
@@ -97,33 +103,33 @@ class Main:
             self.log(f"Cannot compare - all samples have {compare_by} == {groups[0]}")
             return
 
-        control_group = st.selectbox(
+        control_group = self.disp_stats.selectbox(
             "Control Group:",
             options=groups
         )
-        comparison_group = st.selectbox(
+        comparison_group = self.disp_stats.selectbox(
             "Comparison Group:",
             options=[gn for gn in groups if gn != control_group]
         )
 
         # Let the user decide whether to run a paired or unpaired analysis
-        if self.metadata.shape[1] < 2 or st.selectbox(
+        if self.metadata.shape[1] < 2 or self.disp_stats.selectbox(
             "Statistical Test:",
             options=[
-                "Unpaired t-test",
-                "Paired t-test"
+                "Paired t-test",
+                "Unpaired t-test"
             ]
         ) == "Unpaired t-test":
 
             # Run an unpaired t-test for the selected set of groups
-            res = self.unpaired_ttest(compare_by, control_group, comparison_group)
+            self.res = self.unpaired_ttest(compare_by, control_group, comparison_group)
 
             pair_by = None
 
         else:
             # If a paired approach was selected
             # Ask the user which column to pair samples by
-            pair_by = st.selectbox(
+            pair_by = self.disp_stats.selectbox(
                 "Pair By:",
                 help="Select the column used to match up pairs of samples for comparison",
                 options=[
@@ -142,12 +148,12 @@ class Main:
                     return
 
             # Run a paired t-test for the selected set of groups, and pairing variable
-            res = self.paired_ttest(pair_by, compare_by, control_group, comparison_group)
+            self.res = self.paired_ttest(pair_by, compare_by, control_group, comparison_group)
 
-        res = (
-            res
+        self.res = (
+            self.res
             .assign(
-                neg_log_pvalue=-res["pvalue"].apply(np.log10)
+                neg_log_pvalue=-self.res["pvalue"].apply(np.log10)
             )
             .sort_values(by="pvalue")
             .reset_index(drop=True)
@@ -163,10 +169,10 @@ class Main:
             )
         )
 
-        st.markdown("### Results Table")
-        st.dataframe(res, hide_index=True)
+        self.disp_stats.markdown("### Results Table")
+        self.disp_stats.dataframe(self.res, hide_index=True)
 
-        st.markdown("### Plot Results")
+        self.disp_plots.markdown("### Plot Results")
 
         kwargs = dict(
             hover_name="metabolite",
@@ -183,7 +189,7 @@ class Main:
 
         # Volcano
         fig = px.scatter(
-            data_frame=res,
+            data_frame=self.res,
             x="log_fold_change",
             y="neg_log_pvalue",
             title="Volcano Plot",
@@ -191,13 +197,13 @@ class Main:
         )
         fig.add_vline(x=0, line_width=1, line_color="grey")
         fig.add_hline(y=0, line_width=1, line_color="grey")
-        st.plotly_chart(fig)
+        self.disp_plots.plotly_chart(fig)
 
         # MA Plot
-        ma_plot = st.empty()
-        ma_log_y = st.checkbox("Log Y Scale", key="logy_maplot")
+        ma_plot = self.disp_plots.empty()
+        ma_log_y = self.disp_plots.checkbox("Log Y Scale", key="logy_maplot")
         fig = px.scatter(
-            data_frame=res,
+            data_frame=self.res,
             x="log_fold_change",
             y="mean_abund",
             title="M-A Plot",
@@ -209,11 +215,11 @@ class Main:
             fig.add_hline(y=0, line_width=1, line_color="grey")
         ma_plot.plotly_chart(fig)
 
-        st.markdown("### Plot Single Metabolite")
+        self.disp_plots.markdown("### Plot Single Metabolite")
         # Let the user select one to plot
-        metab = st.selectbox(
+        metab = self.disp_plots.selectbox(
             "Metabolite to plot",
-            res['metabolite'].values
+            self.res['metabolite'].values
         )
 
         plot_df = (
@@ -234,7 +240,7 @@ class Main:
 
         if pair_by is None:
 
-            plot_type = st.selectbox(
+            plot_type = self.disp_plots.selectbox(
                 "Plot Type:",
                 options=[
                     "box",
@@ -278,20 +284,13 @@ class Main:
                 **kwargs
             )
 
-        if st.checkbox("Log Y Scale"):
+        if self.disp_plots.checkbox("Log Y Scale"):
             plt.yscale("log")
 
         plt.show()
-        st.pyplot(fig)
+        self.disp_plots.pyplot(fig)
 
-        st.dataframe(plot_df)
-
-        # fig, ax = plt.subplots()
-        # plt.xlabel(cname)
-        # plt.ylabel("Abundance")
-        # plt.title(metab)
-        # plot_df.plot(kind="line", ax=ax)
-        # cont.pyplot(fig)
+        self.disp_plots.dataframe(plot_df)
 
     def unpaired_ttest(self, compare_by, control_group, comparison_group):
 
@@ -479,6 +478,8 @@ class Main:
         if self.metadata is None:
             return
 
+        self.disp_kegg.write("## KEGG Pathways")
+
         if self.kegg_uploader:
 
             try:
@@ -517,15 +518,88 @@ class Main:
 
             self.log(f"KEGG IDs found in abundance table: {self.kegg.shape[0]:,}")
             self.abund = self.abund.reindex(columns=self.kegg.index.values)
-            self.log(f"Only using the {self.abund.shape[0]:,} metabolites listed in the KEGG table")
+            self.log(f"Only using the {self.abund.shape[1]:,} metabolites listed in the KEGG table")
 
         else:
-            self.disp_empty.write("Please provide KEGG CSV")
+            self.disp_kegg.write("Please provide KEGG CSV")
 
     def kegg_pathways(self):
         """Display the KEGG pathways for any significant genes."""
-        pass
 
+        if self.kegg is None:
+            return
+
+        max_p = self.disp_kegg.number_input(
+            "Threshold: Maximum p-value",
+            help="Only display pathways for metabolites with p-values less than or equal to this value",
+            value=0.05
+        )
+
+        filt_res = self.res.query(f"pvalue <= {max_p}")
+
+        self.disp_kegg.write(f"There are {filt_res.shape[0]:,} metabolites with p-value <= {max_p}")
+
+        filt_res = filt_res.assign(
+            KEGG_ID=filt_res["metabolite"].apply(self.kegg.get),
+            KEGG_NAME=lambda d: d["KEGG_ID"].apply(get_kegg_name)
+        ).reindex(
+            columns=["KEGG_ID", "KEGG_NAME"] + list(self.res.columns.values)
+        )
+        self.disp_kegg.dataframe(filt_res, use_container_width=True)
+
+        # Make a table of pathways
+        pathways = pd.DataFrame({
+            f'{r["KEGG_ID"]} {r["KEGG_NAME"]}': {
+                pathway: 1
+                for pathway in get_kegg_pathways(
+                    r["KEGG_ID"]
+                )
+            }
+            for _, r in filt_res.iterrows()
+        }).fillna(0)
+
+        self.disp_kegg.dataframe(pathways)
+
+        fig, _ = plt.subplots()
+        sns.heatmap(
+            data=pathways,
+            cmap="Blues"
+        )
+        self.disp_kegg.pyplot(fig)
+        plt.close()
+
+
+@st.cache_resource
+def get_kegg_info(ko):
+    try:
+        r = requests.get("http://rest.kegg.jp/get/{}".format(ko))
+    except Exception as e:
+        return None
+    output = defaultdict(list)
+    header = None
+
+    for line in r.text.split("\n"):
+        if len(line) == 0:
+            continue
+        elif line[0] == " " and header is not None:
+            output[header].append(line.strip())
+        else:
+            header = line.split(" ")[0]
+    return output
+
+
+def get_kegg_name(kegg_id):
+    if get_kegg_info(kegg_id) is not None:
+        return get_kegg_info(kegg_id)["NAME"][0]
+    else:
+        return "None Found"
+
+
+def get_kegg_pathways(kegg_id):
+    if get_kegg_info(kegg_id) is not None:
+        return get_kegg_info(kegg_id)["PATHWAY"]
+    else:
+        return []
 
 if __name__ == "__main__":
     Main()
