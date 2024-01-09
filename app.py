@@ -526,7 +526,7 @@ class Main:
     def kegg_pathways(self):
         """Display the KEGG pathways for any significant genes."""
 
-        if self.kegg is None:
+        if self.kegg is None or self.res is None:
             return
 
         max_p = self.disp_kegg.number_input(
@@ -590,7 +590,10 @@ def get_kegg_info(ko):
 
 def get_kegg_name(kegg_id):
     if get_kegg_info(kegg_id) is not None:
-        return get_kegg_info(kegg_id)["NAME"][0]
+        if len(get_kegg_info(kegg_id)["NAME"]) == 0:
+            return "None Found"
+        else:
+            return get_kegg_info(kegg_id)["NAME"][0]
     else:
         return "None Found"
 
