@@ -226,6 +226,7 @@ class Main:
             self.metadata.assign(**{
                 metab: self.abund[metab]
             })
+            .reindex(columns=[compare_by, metab])
             .dropna()
         )
         plot_df = plot_df.loc[
