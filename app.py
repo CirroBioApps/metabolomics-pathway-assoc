@@ -642,7 +642,7 @@ class Main:
             [Display Pathway Map: {selected_pathway}]({map_url})
 
             - Blue - increased in comparison vs. control group
-            - Orange - increased in comparison vs. control group
+            - Orange - decreased in comparison vs. control group
             """
         )
 
