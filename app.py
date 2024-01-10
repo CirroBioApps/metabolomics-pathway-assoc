@@ -7,6 +7,7 @@ import numpy as np
 import streamlit as st
 import pandas as pd
 from scipy import stats
+from scipy.cluster import hierarchy
 import matplotlib.pyplot as plt
 import seaborn as sns
 import datetime
@@ -561,6 +562,31 @@ class Main:
 
         self.disp_kegg.dataframe(pathways)
 
+        min_metabolites = self.disp_kegg.number_input(
+            "Show Pathways with >= X metabolites",
+            min_value=1,
+            value=1,
+            step=1
+        )
+
+        pathways = pathways.loc[
+            pathways.sum(axis=1) >= min_metabolites
+        ]
+        pathways = pathways.loc[:, pathways.any()]
+
+        pathways = pathways.reindex(
+            index=pathways.index.values[
+                hierarchy.leaves_list(
+                    hierarchy.linkage(pathways)
+                )
+            ],
+            columns=pathways.columns.values[
+                hierarchy.leaves_list(
+                    hierarchy.linkage(pathways.T)
+                )
+            ]
+        )
+
         fig, _ = plt.subplots()
         sns.heatmap(
             data=pathways,
@@ -568,6 +594,67 @@ class Main:
         )
         self.disp_kegg.pyplot(fig)
         plt.close()
+
+        # Select a pathway to display
+        spacer = " (# of compounds = "
+        pathway_options = [
+            f"{pathway}{spacer}{n:,})"
+            for pathway, n in (
+                pathways
+                .sum(axis=1)
+                .apply(int)
+                .sort_values(ascending=False)
+                .items()
+            )
+        ]
+
+        selected_pathway = self.disp_kegg.selectbox(
+            "Display Pathway:",
+            pathway_options
+        )
+        selected_pathway = selected_pathway.split(spacer)[0]
+
+        # Get the list of positive and negatively associated compounds
+        assoc_compounds = [
+            compound.split(" ")[0] for compound, in_pathway in pathways.items()
+            if in_pathway[selected_pathway]
+        ]
+        assoc_compounds = list(set(assoc_compounds))
+
+        # Get the direction of association
+        assoc_compounds = (
+            filt_res
+            .reindex(columns=["KEGG_ID", "log_fold_change"])
+            .dropna()
+            .set_index("KEGG_ID")
+            .reindex(index=assoc_compounds)
+            .dropna()
+            ["log_fold_change"] > 0
+        )
+
+        map_url = self.format_kegg_map_url(
+            selected_pathway.split(" ")[0],
+            assoc_compounds
+        )
+
+        self.disp_kegg.markdown(
+            f"""
+            [Display Pathway Map: {selected_pathway}]({map_url})
+
+            - Blue - increased in comparison vs. control group
+            - Orange - increased in comparison vs. control group
+            """
+        )
+
+    @staticmethod
+    def format_kegg_map_url(map_id, assoc_compounds):
+        url = f"https://www.kegg.jp/kegg-bin/show_pathway?{map_id}"
+
+        for comp, is_pos in assoc_compounds.items():
+            color = "blue" if is_pos else "orange"
+            url = f"{url}/{comp}%20{color}"
+
+        return url
 
 
 @st.cache_resource
