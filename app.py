@@ -1,11 +1,13 @@
 #!/usr/bin/env streamlit
 
 from collections import defaultdict
+import json
 import requests
 from typing import Union
 import numpy as np
 import streamlit as st
 import pandas as pd
+from time import sleep
 from scipy import stats
 from scipy.cluster import hierarchy
 import matplotlib.pyplot as plt
@@ -658,11 +660,18 @@ class Main:
 
 
 @st.cache_resource
-def get_kegg_info(ko):
-    try:
+def get_kegg_info(ko: str):
+
+    ko = str(ko).strip()
+
+    r = None
+    for _ in range(10):
         r = requests.get("http://rest.kegg.jp/get/{}".format(ko))
-    except Exception as e:
-        return None
+        if r.status_code == 404:
+            sleep(0.1)
+        else:
+            break
+
     output = defaultdict(list)
     header = None
 
@@ -672,11 +681,18 @@ def get_kegg_info(ko):
         elif line[0] == " " and header is not None:
             output[header].append(line.strip())
         else:
-            header = line.split(" ")[0]
+            header = line.strip().split(" ")[0]
+            if len(line.strip()) > len(header):
+                val = line[len(header):].strip()
+                if len(val) > 0:
+                    output[header].append(val)
+
     return output
 
 
 def get_kegg_name(kegg_id):
+    if kegg_id is None:
+        return "None Found"
     if get_kegg_info(kegg_id) is not None:
         if len(get_kegg_info(kegg_id)["NAME"]) == 0:
             return "None Found"
@@ -687,10 +703,13 @@ def get_kegg_name(kegg_id):
 
 
 def get_kegg_pathways(kegg_id):
+    if kegg_id is None:
+        return "None Found"
     if get_kegg_info(kegg_id) is not None:
         return get_kegg_info(kegg_id)["PATHWAY"]
     else:
         return []
+
 
 if __name__ == "__main__":
     Main()
