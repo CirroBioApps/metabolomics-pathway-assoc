@@ -393,7 +393,7 @@ class Main:
             )
 
             # Convert all values to float, or NaN
-            self.abund = self.abund.applymap(self.makefloat)
+            self.abund = self.abund.map(self.makefloat)
 
             # Drop any rows which are entirely lacking values
             self.abund = self.abund.loc[
