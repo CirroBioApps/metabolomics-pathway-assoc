@@ -229,7 +229,13 @@ class Main:
             self.metadata.assign(**{
                 metab: self.abund[metab]
             })
-            .reindex(columns=[compare_by, metab])
+            .reindex(
+                columns=(
+                    [compare_by, metab]
+                    if pair_by is None else
+                    [compare_by, metab, pair_by]
+                )
+            )
             .dropna()
         )
         plot_df = plot_df.loc[
