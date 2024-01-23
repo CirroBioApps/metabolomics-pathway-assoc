@@ -564,6 +564,7 @@ class Main:
                 for pathway in get_kegg_pathways(
                     r["KEGG_ID"]
                 )
+                if pathway != "None Found"
             }
             for _, r in filt_res.iterrows()
         }).fillna(0)
@@ -710,7 +711,7 @@ def get_kegg_name(kegg_id):
 
 def get_kegg_pathways(kegg_id):
     if kegg_id is None:
-        return "None Found"
+        return ["None Found"]
     if get_kegg_info(kegg_id) is not None:
         return get_kegg_info(kegg_id)["PATHWAY"]
     else:
